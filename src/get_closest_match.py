@@ -46,7 +46,7 @@ def process_raw_classification(clas_df, titlecol, codecol=None):
     # Error if codecol is duplicated
     if clas_df[codecol].duplicated().sum() > 0:
         raise ValueError("Code column is duplicated.")
-    return clas_df
+    return clas_df, codecol
 
 
 def preprocess_df(df, text_colname):
@@ -123,8 +123,8 @@ def prepare_data_and_embeddings(
 ):
     print("Pre-processing text")
     # Process raw classification df's
-    clas_a_df = process_raw_classification(clas_a_df, titlecol_a, codecol_a)
-    clas_b_df = process_raw_classification(clas_b_df, titlecol_b, codecol_b)
+    clas_a_df, codecol_a = process_raw_classification(clas_a_df, titlecol_a, codecol_a)
+    clas_b_df, codecol_b = process_raw_classification(clas_b_df, titlecol_b, codecol_b)
 
     # Download required resources
     download_resources()
@@ -134,19 +134,23 @@ def prepare_data_and_embeddings(
 
     # Get embeddings
     print("Preparing embeddings")
-    clas_a_vec = get_embeddings(clas_a_df, ft_model, "clas_a_title")
-    clas_b_vec = get_embeddings(clas_b_df, ft_model, "clas_b_title")
-    return clas_a_vec, clas_b_vec
+    clas_a_vec = get_embeddings(clas_a_df, ft_model, titlecol_a)
+    clas_b_vec = get_embeddings(clas_b_df, ft_model, titlecol_b)
+    return clas_a_vec, clas_b_vec, codecol_a, codecol_b
 
 
-def get_topn_matches(clas_a, clas_b, titlecol_b, codecol_b, n_best):
+def get_topn_matches(clas_a, clas_b, titlecol_b, codecol_b, n_best,):
     """Get top N matches in clas_b for each element in clas_a"""
+    # Calculate distance matrix using cosine similarity
     similarity_df = pd.DataFrame(
         1 - cdist(clas_a.values, clas_b.values, metric="cosine"),
         index=clas_a.index,
         columns=clas_b.index,
     )
+    # Get order of sorting, as well as the scores
     order = np.argsort(-similarity_df.values, axis=1)[:, :n_best]
+    scores = -np.sort(-similarity_df.values, axis=1)[:, :n_best]
+    # Get the corresponding codes and names, and return
     clas_b_codes = similarity_df.columns.get_level_values(codecol_b)
     clas_b_names = similarity_df.columns.get_level_values(titlecol_b)
     result_names = pd.DataFrame(
@@ -159,7 +163,13 @@ def get_topn_matches(clas_a, clas_b, titlecol_b, codecol_b, n_best):
         columns=["top{}".format(i) for i in range(1, n_best + 1)],
         index=similarity_df.index,
     )
-    return result_codes, result_names
+    result_scores = pd.DataFrame(
+        scores,
+        columns=["top{}".format(i) for i in range(1, n_best + 1)],
+        index=similarity_df.index,
+    ) 
+    result_dict = {"names": result_names, "codes": result_codes, "scores": result_scores}
+    return result_dict
 
 
 def process_data_and_match(
@@ -171,10 +181,17 @@ def process_data_and_match(
     codecol_b=None,
     n_best=5,
 ):
-    clas_a_vec, clas_b_vec = prepare_data_and_embeddings(
+    """
+    Args:
+        clas_a_df, clas_b_df: Dataframes containing titles to match
+        titlecol_a, titlecol_b: Column names in respective dataframes containing titles
+        codecol_a, codecol_b: (optional) if the titles have codes, column name corresponding to the code
+        n_best: top N matches to return
+    """
+    clas_a_vec, clas_b_vec, codecol_a, codecol_b = prepare_data_and_embeddings(
         clas_a_df, clas_b_df, titlecol_a, titlecol_b, codecol_a, codecol_b
     )
-    result_codes, result_names = get_topn_matches(
-        clas_a_vec, clas_b_vec, titlecol_b, codecol_b, n_best
+    result_dict = get_topn_matches(
+        clas_a_vec, clas_b_vec, titlecol_b, codecol_b, n_best,
     )
-    return result_codes, result_names
+    return result_dict
